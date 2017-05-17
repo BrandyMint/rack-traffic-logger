@@ -3,9 +3,10 @@ require_relative 'option_interpreter/shorthand'
 module Rack
   class TrafficLogger
     class OptionInterpreter
-      
+
       VERBS = %i[get post put patch delete head options trace]
       TYPES = %i[request_headers response_headers request_bodies response_bodies]
+      PATH_METHOD = :path
 
       def initialize(*options)
         @tests = {}
@@ -29,6 +30,7 @@ module Rack
 
       class OnlyVerb < Rule; end
       class OnlyCode < Rule; end
+      class OnlyPath < Rule; end
       class Include < Rule; end
       class Exclude < Rule; end
 
@@ -37,10 +39,11 @@ module Rack
       end
 
       class OptionProxy
-        def initialize(interpreter, verb, code)
+        def initialize(interpreter, verb, code, path_regexp)
           @interpreter = interpreter
           @verb = verb
           @code = code
+          @path_regexp = path_regexp
         end
         (TYPES + [:basic]).each do |type|
           method = :"#{type}?"
@@ -59,6 +62,8 @@ module Rack
         code = filter[:code]
         input.each do |token|
           case token
+            when PATH_METHOD
+              rules << OnlyPath.new(token, filter)
             when *VERBS
               raise "Verb on verb (#{token} on #{verb})" if verb
               rules << OnlyVerb.new(token, filter)
@@ -92,6 +97,7 @@ module Rack
 
       def add_rule_pair(name, value, **filter)
         case name
+          when PATH_METHOD then add_rules value, **filter.merge(path: name)
           when *VERBS then add_rules value, **filter.merge(verb: name)
           when Fixnum, Range then add_rules value, **filter.merge(code: name)
           when Array then name.each { |n| add_rule_pair n, value, **filter }
@@ -103,6 +109,7 @@ module Rack
       # @param verb [Symbol] One of the {self::VERBS} symbols
       # @param code [Fixnum] The HTTP status code
       # @param type [Symbol|NilClass] One of the {self::TYPES} symbols, or `nil` for basic request/response details
+      # @param path [String] Request path, or `nil` for basic request/response details
       # @return [TrueClass|FalseClass] Whether the type should be logged
       def test(*args)
         if @tests.key? args
@@ -116,7 +123,7 @@ module Rack
 
       private
 
-      def _test(verb, code, type = nil)
+      def _test(verb, code, type = nil, path = nil)
 
         # To start, only allow if not a header/body
         type_result = type == nil
@@ -131,6 +138,7 @@ module Rack
             when Include then type_result ||= rule.arg == type
             when OnlyVerb then only_verb ||= rule.arg == verb
             when OnlyCode then only_code ||= rule.arg === code
+            when OnlyPath then only_path ||= rule.arg.match? path
             when Exclude
               only_verb ||= false if rule.filter[:verb]
               only_code ||= false if rule.filter[:code]
